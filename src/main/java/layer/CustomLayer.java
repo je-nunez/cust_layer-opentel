@@ -18,7 +18,10 @@
  ******************************************************************************/
 
 // package org.deeplearning4j.examples.advanced.features.customizingdl4j.layers.layer;
+
 package layer;
+
+// import io.opentelemetry.api.trace.Tracer;
 
 import org.deeplearning4j.nn.api.Layer;
 import org.deeplearning4j.nn.api.ParamInitializer;
@@ -118,7 +121,7 @@ public class CustomLayer extends FeedForwardLayer {
 
         int trainSizeFixed = 0;
         int trainSizeVariable = 0;
-        if(getIDropout() != null){
+        if (getIDropout() != null) {
             //Assume we dup the input for dropout
             trainSizeVariable += inputType.arrayElementsPerExample();
         }
@@ -158,7 +161,7 @@ public class CustomLayer extends FeedForwardLayer {
          *
          * @param secondActivationFunction Second activation function for the layer
          */
-        public Builder secondActivationFunction(Activation secondActivationFunction){
+        public Builder secondActivationFunction(Activation secondActivationFunction) {
             this.secondActivationFunction = secondActivationFunction.getActivationFunction();
             return this;
         }

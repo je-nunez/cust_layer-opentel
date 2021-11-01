@@ -14,10 +14,10 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>org.deeplearning4j</groupId>
-    <artifactId>dl4j-examples</artifactId>
+    <artifactId>custlayer-otel</artifactId>
     <version>1.0.0-SNAPSHOT</version>
-    <name>Introduction to DL4J</name>
-    <description>A set of examples introducing the DL4J framework</description>
+    <name>Custom Layer instrumented with OpenTelemetry</name>
+    <description>A custom neural layer, instrumented with OpenTelemetry, used in MNIST</description>
 
     <properties>
         <dl4j-master.version>1.0.0-M1.1</dl4j-master.version>
@@ -37,6 +37,9 @@
         <javacv.version>1.5.5</javacv.version>
 
         <opentelemetry.version>1.7.0</opentelemetry.version>
+        <slf4j.version>1.7.32</slf4j.version>
+        <netty.version>1.41.0</netty.version>
+
     </properties>
 
 
@@ -60,7 +63,7 @@
              <dependency>
                  <groupId>io.opentelemetry</groupId>
                  <artifactId>opentelemetry-bom</artifactId>
-                 <version>1.7.0</version>
+                 <version>${opentelemetry.version}</version>
                  <type>pom</type>
                  <scope>import</scope>
              </dependency>
@@ -73,12 +76,44 @@
         <dependency>
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-api</artifactId>
+            <version>${opentelemetry.version}</version>
+        </dependency>
+        <!-- OTEL autoconfiguration through the OTEL_TRACES_EXPORTER: see
+             also dependencies below.
+        -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk-extension-autoconfigure</artifactId>
+            <!-- Still in alpha version as of this writing, not 1.7.0 yet: -->
+            <version>1.7.0-alpha</version>
         </dependency>
 
-        <dependency>   
+        <!-- choose below the OTEL exporter dependency, or it could be all
+             the OTEL exporter dependencies since it is using autoconfiguration
+             through the OTEL_TRACES_EXPORTER environment variable, which
+             can have arbitrary values.
+        -->
+        <dependency>
             <groupId>io.opentelemetry</groupId>
-            <artifactId>opentelemetry-extension-annotations</artifactId>
+            <artifactId>opentelemetry-exporter-logging</artifactId>
+            <version>${opentelemetry.version}</version>
         </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+            <version>${opentelemetry.version}</version>
+        </dependency>
+        <!-- Avoid the message:
+               No functional channel service provider found. Try adding a
+               dependency on the
+               grpc-okhttp, grpc-netty, or grpc-netty-shaded artifact
+        -->
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-netty</artifactId>
+            <version>${netty.version}</version>
+        </dependency>
+
 
 
         <dependency>
@@ -133,17 +168,12 @@
             <version>${dl4j-master.version}</version>
         </dependency>
 
-        <!-- Used in the feedforward/classification/MLP* and feedforward/regression/RegressionMathFunctions example -->
         <dependency>
-            <groupId>jfree</groupId>
-            <artifactId>jfreechart</artifactId>
-            <version>${jfreechart.version}</version>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-jdk14</artifactId>
+            <version>${slf4j.version}</version>
         </dependency>
-        <dependency>
-            <groupId>org.jfree</groupId>
-            <artifactId>jcommon</artifactId>
-            <version>${jcommon.version}</version>
-        </dependency>
+
         <!-- Used for downloading data in some of the examples -->
         <dependency>
             <groupId>org.apache.httpcomponents</groupId>
@@ -156,32 +186,21 @@
             <version>${logback.version}</version>
         </dependency>
 
-        <dependency>
-            <groupId>org.bytedeco</groupId>
-            <artifactId>javacv-platform</artifactId>
-            <version>${javacv.version}</version>
-        </dependency>
-
-        <!-- Test dependency. Ignore for your own application. -->
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-engine</artifactId>
-            <version>${junit.version}</version>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-api</artifactId>
-            <version>${junit.version}</version>
-            <scope>test</scope>
-        </dependency>
-
-
-
     </dependencies>
+
     <!-- Maven Enforcer: Ensures user has an up to date version of Maven before building -->
     <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <targetPath>${project.build.directory}</targetPath>
+                <includes>
+                    <include>log4j.properties</include>
+                    <include>logging.properties</include>
+                </includes>
+            </resource>
+        </resources>
+
         <plugins>
 
             <plugin>
@@ -333,5 +352,6 @@
                 </plugin>
             </plugins>
         </pluginManagement>
+
     </build>
 </project>

@@ -18,7 +18,20 @@
  ******************************************************************************/
 
 // package org.deeplearning4j.examples.advanced.features.customizingdl4j.layers.layer;
+
 package layer;
+
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
+
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
+// import io.opentelemetry.extension.annotations.SpanAttribute;
+// import io.opentelemetry.extension.annotations.WithSpan;
 
 import org.deeplearning4j.nn.conf.NeuralNetConfiguration;
 import org.deeplearning4j.nn.gradient.DefaultGradient;
@@ -27,62 +40,141 @@ import org.deeplearning4j.nn.layers.BaseLayer;
 import org.deeplearning4j.nn.params.DefaultParamInitializer;
 import org.deeplearning4j.nn.workspace.ArrayType;
 import org.deeplearning4j.nn.workspace.LayerWorkspaceMgr;
+import org.nd4j.common.primitives.Pair;
 import org.nd4j.linalg.activations.IActivation;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.linalg.indexing.NDArrayIndex;
-import org.nd4j.common.primitives.Pair;
 
-import io.opentelemetry.api.common.AttributeKey;
-import io.opentelemetry.api.common.Attributes;
-import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.extension.annotations.SpanAttribute;
-import io.opentelemetry.extension.annotations.WithSpan;
+// import java.util.Thread;
 
 /**
- * Layer (implementation) class for the custom layer example, instrumented with OpenTelemetry.
+ * Layer (implementation) class for the custom layer example, instrumented with
+ * OpenTelemetry.
  *
  * @author Jose E. Nunez (based on original code of DL4J from Alex Black)
  */
-public class CustomLayerImplementation extends BaseLayer<CustomLayer> { //Generic parameter here: the configuration class type
+public class CustomLayerImplementation extends BaseLayer<CustomLayer> {
+
+    private Tracer openTelTracer;
+
+    private static ThreadMXBean mxBean = ManagementFactory.getThreadMXBean();
+    private static final boolean isThreadCpuTimeSupported =
+                                           mxBean.isThreadCpuTimeSupported();
 
     public CustomLayerImplementation(NeuralNetConfiguration conf, DataType dataType) {
         super(conf, dataType);
     }
 
+    public Tracer getOpenTelTracer() {
+        return openTelTracer;
+    }
 
-    // https://github.com/open-telemetry/opentelemetry-java-instrumentation/blob/main/docs/manual-instrumentation.md
+    public void setOpenTelTracer(Tracer openTelTracer) {
+        this.openTelTracer = openTelTracer;
+    }
 
-    @WithSpan
+    // Inspired from:
+    // https://www.javarticles.com/2016/02/java-thread-determining-cpu-time.html
+    // DL4J's MultiLayerConfiguration is single-threaded (there are other
+    // support threads, like ND4J DeallocatorServiceThread_#.
+    private static long getCpuTimeCurrThread() {
+
+        if (isThreadCpuTimeSupported) {
+            try {
+                Thread currThread = Thread.currentThread();
+                return mxBean.getThreadCpuTime(currThread.getId());
+                // The above is for CPU-based calculations. If GPUs are used,
+                // e.g., CUDA-interfaced, then either
+                //     clock_t clock();
+                //     long long int clock64();
+                // or the event recording ones
+                //     cudaEventCreate()
+                //     cudaEventRecord()
+                //     cudaEventSynchronize()
+                //     cudaEventElapsedTime()
+                //     cudaEventDestroy()
+                // would be used.
+            } catch (UnsupportedOperationException e) {
+                return -2;
+            }
+        } else {
+            return -1;
+        }
+    }
+
+    private Span emitTelemetryCpuEvent(Span currentTelSpan, String eventName) {
+        // Note: emit the event only if this JVM records CPU-time
+        // per-thread, and there is a current OpenTelemetry span.
+        if (currentTelSpan == null) {
+            currentTelSpan = Span.current();
+        }
+
+        if (currentTelSpan != null && isThreadCpuTimeSupported) {
+            long accumCpuTime = getCpuTimeCurrThread();
+            if (accumCpuTime >= 0) {
+                // System.out.println("Emitting event");
+                Attributes myEventAttributes =
+                       Attributes.of(AttributeKey.longKey("accumThreadTime"),
+                                     accumCpuTime);
+                currentTelSpan.addEvent(eventName, myEventAttributes);
+            }
+        }
+
+        return currentTelSpan;
+    }
+
+
     @Override
-    public INDArray activate(@SpanAttribute("training") boolean training, LayerWorkspaceMgr workspaceMgr) {
+    public INDArray activate(boolean training,
+                             LayerWorkspaceMgr workspaceMgr) {
         /*
-        The activate method is used for doing forward pass. Note that it relies on the pre-output method;
-        essentially we are just applying the activation function (or, functions in this example).
-        In this particular (contrived) example, we have TWO activation functions - one for the first half of the outputs
-        and another for the second half.
+        The activate method is used for doing forward pass. Note that it relies
+        on the pre-output method; essentially we are just applying the
+        activation function (or, functions in this example). In this particular
+        (contrived) example, we have TWO activation functions - one for the
+        first half of the outputs and another for the second half.
          */
 
-        INDArray output = preOutput(training, workspaceMgr);
-        int columns = output.columns();
+        INDArray output = null;
+        Span span = null;
+        if (openTelTracer != null) {
+            span = openTelTracer.spanBuilder("activate")
+                     .setSpanKind(SpanKind.INTERNAL)
+                     // .setParent(...)     // TODO
+                     .setAttribute("training", training)
+                     .setAttribute("epochCount", getEpochCount())
+                     .setAttribute("iterationCount", getIterationCount())
+                     .setAttribute("thread.id", Thread.currentThread().getId())
+                     // The above is a semantic attribute
+                     .startSpan();
+            // OpenTelemetry event
+            emitTelemetryCpuEvent(span, "customLayerBeginActiv");
+        }
 
-        INDArray firstHalf = output.get(NDArrayIndex.all(), NDArrayIndex.interval(0, columns / 2));
-        INDArray secondHalf = output.get(NDArrayIndex.all(), NDArrayIndex.interval(columns / 2, columns));
+        try (Scope scope = (span != null) ? span.makeCurrent() : null) {
 
-        IActivation activation1 = layerConf().getActivationFn();
-        IActivation activation2 = ((CustomLayer) conf.getLayer()).getSecondActivationFunction();
+            output = preOutput(training, workspaceMgr);
+            int columns = output.columns();
 
-        //IActivation function instances modify the activation functions in-place
-        activation1.getActivation(firstHalf, training);
-        activation2.getActivation(secondHalf, training);
+            INDArray firstHalf = output.get(NDArrayIndex.all(), NDArrayIndex.interval(0, columns / 2));
+            INDArray secondHalf = output.get(NDArrayIndex.all(), NDArrayIndex.interval(columns / 2, columns));
 
-        // OpenTelemetry:
-        Span span = Span.current();
-        span.setAttribute("columns", columns);
-        // ...
-        // Attributes myEventAttributes = Attributes.of(AttributeKey.stringKey("..."), ... [,...]);
-        // span.addEvent("my-event-name", myEventAttributes);
+            IActivation activation1 = layerConf().getActivationFn();
+            IActivation activation2 = ((CustomLayer) conf.getLayer())
+                                              .getSecondActivationFunction();
+
+            //IActivation function instances modify the activation functions in-place
+            activation1.getActivation(firstHalf, training);
+            activation2.getActivation(secondHalf, training);
+
+            emitTelemetryCpuEvent(span, "customLayerEndActiv");
+        } finally {
+            if (span != null) {
+                span.end();
+            }
+        }
 
         return output;
     }
@@ -93,7 +185,6 @@ public class CustomLayerImplementation extends BaseLayer<CustomLayer> { //Generi
     }
 
 
-    @WithSpan
     @Override
     public Pair<Gradient, INDArray> backpropGradient(INDArray epsilon, LayerWorkspaceMgr workspaceMgr) {
         /*
@@ -118,41 +209,91 @@ public class CustomLayerImplementation extends BaseLayer<CustomLayer> { //Generi
 
         */
 
-        INDArray activationDerivative = preOutput(true, workspaceMgr);
-        int columns = activationDerivative.columns();
-
-        INDArray firstHalf = activationDerivative.get(NDArrayIndex.all(), NDArrayIndex.interval(0, columns / 2));
-        INDArray secondHalf = activationDerivative.get(NDArrayIndex.all(), NDArrayIndex.interval(columns / 2, columns));
-
-        INDArray epsilonFirstHalf = epsilon.get(NDArrayIndex.all(), NDArrayIndex.interval(0, columns / 2));
-        INDArray epsilonSecondHalf = epsilon.get(NDArrayIndex.all(), NDArrayIndex.interval(columns / 2, columns));
-
-        IActivation activation1 = layerConf().getActivationFn();
-        IActivation activation2 = ((CustomLayer) conf.getLayer()).getSecondActivationFunction();
-
-        //IActivation backprop method modifies the 'firstHalf' and 'secondHalf' arrays in-place, to contain dL/dz
-        activation1.backprop(firstHalf, epsilonFirstHalf);
-        activation2.backprop(secondHalf, epsilonSecondHalf);
-
-        //The remaining code for this method: just copy & pasted from BaseLayer.backpropGradient
-//        INDArray delta = epsilon.muli(activationDerivative);
-        if (maskArray != null) {
-            activationDerivative.muliColumnVector(maskArray);
+        Gradient ret = null;
+        INDArray epsilonNext = null;
+        Span span = null;
+        if (openTelTracer != null) {
+            span = openTelTracer.spanBuilder("backpropGradient")
+                     .setSpanKind(SpanKind.INTERNAL)
+                     // .setParent(...)     // TODO
+                     .setAttribute("epochCount", getEpochCount())
+                     .setAttribute("iterationCount", getIterationCount())
+                     .setAttribute("thread.id", Thread.currentThread().getId())
+                     // The above is a semantic attribute
+                     .startSpan();
+            // OpenTelemetry event
+            emitTelemetryCpuEvent(span, "customLayerBeginBackPropGradient");
         }
 
-        Gradient ret = new DefaultGradient();
+        try (Scope scope = (span != null) ? span.makeCurrent() : null) {
 
-        INDArray weightGrad = gradientViews.get(DefaultParamInitializer.WEIGHT_KEY);    //f order
-        Nd4j.gemm(input, activationDerivative, weightGrad, true, false, 1.0, 0.0);
-        INDArray biasGrad = gradientViews.get(DefaultParamInitializer.BIAS_KEY);
-        biasGrad.assign(activationDerivative.sum(0));  //TODO: do this without the assign
+            INDArray activationDerivative = preOutput(true, workspaceMgr);
+            int columns = activationDerivative.columns();
 
-        ret.gradientForVariable().put(DefaultParamInitializer.WEIGHT_KEY, weightGrad);
-        ret.gradientForVariable().put(DefaultParamInitializer.BIAS_KEY, biasGrad);
+            INDArray firstHalf = activationDerivative.get(
+                                   NDArrayIndex.all(),
+                                   NDArrayIndex.interval(0, columns / 2)
+                                 );
+            INDArray secondHalf = activationDerivative.get(
+                                    NDArrayIndex.all(),
+                                    NDArrayIndex.interval(columns / 2, columns)
+                                  );
 
-        INDArray epsilonNext = params.get(DefaultParamInitializer.WEIGHT_KEY).mmul(activationDerivative.transpose()).transpose();
+            INDArray epsilonFirstHalf =
+                                 epsilon.get(
+                                      NDArrayIndex.all(),
+                                      NDArrayIndex.interval(0, columns / 2)
+                                 );
+            INDArray epsilonSecondHalf =
+                                epsilon.get(
+                                    NDArrayIndex.all(),
+                                    NDArrayIndex.interval(columns / 2, columns)
+                                );
 
-        return new Pair<>(ret, workspaceMgr.leverageTo(ArrayType.ACTIVATION_GRAD, epsilonNext));
+            IActivation activation1 = layerConf().getActivationFn();
+            IActivation activation2 = ((CustomLayer) conf.getLayer())
+                                            .getSecondActivationFunction();
+
+            // IActivation backprop method modifies the 'firstHalf' and
+            // 'secondHalf' arrays in-place, to contain dL/dz
+            activation1.backprop(firstHalf, epsilonFirstHalf);
+            activation2.backprop(secondHalf, epsilonSecondHalf);
+
+            // The remaining code for this method: just copy & pasted from
+            // BaseLayer.backpropGradient
+            //   INDArray delta = epsilon.muli(activationDerivative);
+            if (maskArray != null) {
+                activationDerivative.muliColumnVector(maskArray);
+            }
+
+            ret = new DefaultGradient();
+
+            INDArray weightGrad = gradientViews.get(DefaultParamInitializer.WEIGHT_KEY);    //f order
+            Nd4j.gemm(input, activationDerivative, weightGrad, true, false, 1.0, 0.0);
+            INDArray biasGrad = gradientViews.get(DefaultParamInitializer.BIAS_KEY);
+            biasGrad.assign(activationDerivative.sum(0));  //TODO: do this without the assign
+
+            ret.gradientForVariable().put(DefaultParamInitializer.WEIGHT_KEY,
+                                          weightGrad);
+            ret.gradientForVariable().put(DefaultParamInitializer.BIAS_KEY,
+                                          biasGrad);
+
+            epsilonNext = params.get(DefaultParamInitializer.WEIGHT_KEY)
+                                .mmul(activationDerivative.transpose())
+                                .transpose();
+
+            emitTelemetryCpuEvent(span, "customLayerEndBackPropGradient");
+        } finally {
+            if (span != null) {
+                span.end();
+            }
+        }
+
+        return new Pair<>(
+                          ret,
+                          workspaceMgr.leverageTo(ArrayType.ACTIVATION_GRAD,
+                                                  epsilonNext)
+                         );
     }
 
 }
